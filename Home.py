@@ -4,6 +4,7 @@ import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import matplotlib.pyplot as plt
 
+
 # Set page configuration
 st.set_page_config(
     page_title="My Streamlit App",
@@ -14,6 +15,7 @@ st.set_page_config(
 # Main content area
 st.title("Welcome to My Streamlit App")
 st.write("This is a multi-page Streamlit application template.")
+
 
 # Load and prepare data
 df = pd.read_csv('data/med_inv_dataset.csv')
@@ -91,7 +93,7 @@ if st.checkbox("Generate Future Forecast"):
             st.error(f"Error generating forecast: {e}")
             st.write("Try selecting a different drug or using 'All Data'")
 
-# Sidebar (still useful for page-specific controls)
+
 with st.sidebar:
     st.title("Home Page")
     st.info("Select different pages from the sidebar navigation menu above")
