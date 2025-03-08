@@ -7,6 +7,7 @@ from sklearn.metrics import mean_squared_error
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 # Set page configuration
+# Set page configuration
 st.set_page_config(
     page_title="Medical Inventory Forecasting",
     page_icon="📊",
@@ -281,4 +282,5 @@ with st.sidebar:
     
     # Add sidebar footer
     st.sidebar.markdown("---")
+    st.sidebar.info("© 2025 Mainkar Chipa")
     st.sidebar.info("© 2025 Mainkar Chipa")
