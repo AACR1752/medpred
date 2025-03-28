@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+from gurobipy import Model, GRB
+from sklearn.ensemble import RandomForestRegressor
 
 # Set page configuration
-# Set page configuration
+
+seed = 800
+np.random.seed(seed)
+
 st.set_page_config(
     page_title="Medical Inventory Forecasting",
     page_icon="📊",
@@ -18,269 +20,219 @@ st.set_page_config(
 st.title("Medical Inventory Forecasting")
 st.write("Analyze and predict inventory trends for medical supplies.")
 
-# Load data
-@st.cache_data
-def load_data():
-    df = pd.read_csv('data/med_inv_dataset.csv')
-    df.columns = df.columns.str.lower()
-    # Convert dateofbill to datetime if it's not already
-    df['dateofbill'] = pd.to_datetime(df['dateofbill'])
-    return df
+df = pd.read_csv('data/med_inv_dataset.csv')
 
-df = load_data()
+df.columns = df.columns.str.lower()
+df = df.dropna()
+df['dateofbill'] = pd.to_datetime(df['dateofbill'])
+df['month_name'] = df['dateofbill'].dt.strftime('%B') # Extract month name
+df['month_number'] = df['dateofbill'].dt.month  # Extract month number
+df['week_number'] = df['dateofbill'].dt.isocalendar().week  # Extract week number
 
-# Create tabs for different functionality
-tab1, tab2 = st.tabs(["Drug Selection", "Time Series Forecasting"])
+# Create a bi-weekly period column
+df['bi_weekly'] = (df['dateofbill'].dt.day - 1) // 14 + 1
 
-with tab1:
-    st.header("Drug Information")
-    
-    # Drug selection dropdown
-    selected_drugname = st.selectbox('Select a drug', df['drugname'].unique())
-    
-    if st.button("Get Information"):
-        # Filter data for the selected drug
-        drug_data = df[df['drugname'] == selected_drugname]
-        
-        # Display basic information
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            subcat_value = drug_data['subcat'].iloc[0]
-            st.metric("Subcategory", subcat_value)
-        
-        with col2:
-            total_quantity = drug_data['quantity'].sum()
-            st.metric("Total Quantity", f"{total_quantity:,}")
-        
-        with col3:
-            total_returns = drug_data['returnquantity'].sum()
-            st.metric("Total Returns", f"{total_returns:,}")
-        
-        # Show recent transactions
-        st.subheader("Recent Transactions")
-        st.dataframe(drug_data.sort_values('dateofbill', ascending=False).head(10))
+# Group by drug, subcat, month_name, month_number, and bi-weekly period
+df_bi_weekly = df.groupby(['subcat', 'month_name', 'month_number', 'bi_weekly'], as_index=False).agg(
+    {
+        'quantity': 'sum',
+        'returnquantity': 'sum',
+        'final_cost': 'sum',
+        'final_sales': 'sum',
+        'rtnmrp': 'sum'
+    }
+)
 
-with tab2:
-    st.header("Time Series Forecasting")
-    
-    # Options for forecasting
-    forecast_col1, forecast_col2 = st.columns(2)
-    
-    with forecast_col1:
-        # Filter options
-        filter_option = st.radio(
-            "Filter data for forecasting:",
-            ["All Data", "Specific Drug"]
-        )
-        
-        if filter_option == "Specific Drug":
-            forecast_drug = st.selectbox('Select drug for forecasting', df['drugname'].unique())
-            filtered_df = df[df['drugname'] == forecast_drug]
-        else:
-            filtered_df = df
-    
-    with forecast_col2:
-        # Fixed SARIMA parameters display
-        st.subheader("Model Parameters (Fixed)")
-        st.info("Using SARIMA(1,1,1)x(1,1,1,12) model")
-        
-        # Just show test size option
-        test_size = st.slider("Test Set Size (%)", 10, 40, 20) / 100
-    
-    # Process data and run forecast when button is clicked
-    if st.button("Generate Forecast"):
-        with st.spinner("Processing data and generating forecast..."):
-            # Prepare time series data
-            df_summed = filtered_df.groupby('dateofbill')[['quantity', 'returnquantity']].sum().reset_index()
-            df_sorted = df_summed.sort_values(by='dateofbill')
-            
-            # Check if we have enough data
-            if len(df_sorted) < 5:  # Arbitrary minimum, adjust as needed
-                st.error("Not enough data points for forecasting. Try selecting 'All Data' or a different drug with more data.")
-                st.stop()
-                
-            df_sorted = df_sorted.set_index('dateofbill')
-            
-            # Calculate net quantity
-            df_sorted['net_cumulative'] = (df_sorted['quantity'] - df_sorted['returnquantity'])
-            
-            # Display the processed data
-            st.subheader("Processed Time Series Data")
-            st.dataframe(df_sorted.tail())
-            
-            # Handle train-test split safely
-            try:
-                # Calculate minimum test size that ensures at least 1 sample
-                min_test_size = 1 / len(df_sorted)
-                actual_test_size = max(min_test_size, test_size)
-                
-                # Ensure we have at least 3 samples for training
-                actual_train_size = 1 - actual_test_size
-                if actual_train_size * len(df_sorted) < 3:
-                    actual_train_size = (len(df_sorted) - 3) / len(df_sorted)
-                    actual_test_size = 1 - actual_train_size
-                
-                # Manual split instead of train_test_split
-                net_series = df_sorted['net_cumulative']
-                split_idx = int(len(net_series) * (1 - actual_test_size))
-                train_data = net_series.iloc[:split_idx]
-                test_data = net_series.iloc[split_idx:]
-                
-                if len(train_data) < 3 or len(test_data) < 1:
-                    st.warning("Not enough data for a reliable split. Using 70% for training and 30% for testing.")
-                    split_idx = int(len(net_series) * 0.7)
-                    train_data = net_series.iloc[:split_idx]
-                    test_data = net_series.iloc[split_idx:]
-                
-                st.info(f"Data split: {len(train_data)} training samples, {len(test_data)} test samples")
-                
-                # Verify we have enough data for seasonal model
-                if len(train_data) < 13:  # Need at least one full seasonal cycle + 1
-                    st.warning("Not enough data for seasonal modeling. Using non-seasonal ARIMA(1,1,1) instead.")
-                    model = SARIMAX(
-                        train_data, 
-                        order=(1, 1, 1), 
-                        seasonal_order=(0, 0, 0, 0)
-                    )
-                else:
-                    # Create and fit the SARIMA model with fixed parameters
-                    model = SARIMAX(
-                        train_data, 
-                        order=(1, 1, 1), 
-                        seasonal_order=(1, 1, 1, 12)
-                    )
-                
-                results = model.fit(disp=False)
-                
-                # Generate predictions
-                predictions = results.get_forecast(steps=len(test_data))
-                predicted_values = predictions.predicted_mean
-                
-                # Calculate error metrics
-                mse = mean_squared_error(test_data, predicted_values)
-                rmse = np.sqrt(mse)
-                
-                # Display metrics
-                st.subheader("Model Performance")
-                metric_col1, metric_col2 = st.columns(2)
-                with metric_col1:
-                    st.metric("Mean Squared Error (MSE)", f"{mse:.2f}")
-                with metric_col2:
-                    st.metric("Root Mean Squared Error (RMSE)", f"{rmse:.2f}")
-                
-                # Plot results
-                st.subheader("Forecast Results")
-                fig, ax = plt.subplots(figsize=(12, 6))
-                
-                # Plot training data
-                ax.plot(train_data.index, train_data.values, 'b-', label='Training Data')
-                
-                # Plot test data and predictions
-                ax.plot(test_data.index, test_data.values, 'g-', label='Actual Test Data')
-                ax.plot(test_data.index, predicted_values, 'r--', label='Forecast')
-                
-                # Add confidence intervals if available
-                try:
-                    pred_ci = predictions.conf_int(alpha=0.05)
-                    ax.fill_between(
-                        test_data.index, 
-                        pred_ci.iloc[:, 0], 
-                        pred_ci.iloc[:, 1], 
-                        color='pink', 
-                        alpha=0.2
-                    )
-                except:
-                    st.info("Confidence intervals could not be computed")
-                
-                ax.set_title('Time Series Forecast')
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Net Quantity')
-                ax.legend()
-                
-                # Display the plot
-                st.pyplot(fig)
-                
-                # Future forecast option
-                if st.checkbox("Generate Future Forecast"):
-                    future_steps = st.slider("Number of future time periods to forecast", 1, 12, 3)
-                    
-                    # Fit model on all data
-                    if len(df_sorted) < 13:
-                        full_model = SARIMAX(
-                            df_sorted['net_cumulative'],
-                            order=(1, 1, 1),
-                            seasonal_order=(0, 0, 0, 0)
-                        )
-                    else:
-                        full_model = SARIMAX(
-                            df_sorted['net_cumulative'],
-                            order=(1, 1, 1),
-                            seasonal_order=(1, 1, 1, 12)
-                        )
-                    
-                    full_results = full_model.fit(disp=False)
-                    
-                    # Generate future forecast
-                    future_forecast = full_results.get_forecast(steps=future_steps)
-                    future_mean = future_forecast.predicted_mean
-                    
-                    # Plot future forecast
-                    st.subheader("Future Forecast")
-                    fig2, ax2 = plt.subplots(figsize=(12, 6))
-                    
-                    # Plot historical data
-                    ax2.plot(df_sorted.index, df_sorted['net_cumulative'], 'b-', label='Historical Data')
-                    
-                    # Plot forecast
-                    ax2.plot(future_mean.index, future_mean, 'r--', label='Future Forecast')
-                    
-                    try:
-                        future_ci = future_forecast.conf_int(alpha=0.05)
-                        ax2.fill_between(
-                            future_mean.index,
-                            future_ci.iloc[:, 0],
-                            future_ci.iloc[:, 1],
-                            color='red',
-                            alpha=0.2
-                        )
-                        
-                        # Display forecast values in a table
-                        forecast_df = pd.DataFrame({
-                            'Date': future_mean.index,
-                            'Forecast': future_mean.values,
-                            'Lower CI': future_ci.iloc[:, 0].values,
-                            'Upper CI': future_ci.iloc[:, 1].values
-                        })
-                        st.dataframe(forecast_df.set_index('Date'))
-                    except:
-                        # Display forecast values without CI
-                        forecast_df = pd.DataFrame({
-                            'Date': future_mean.index,
-                            'Forecast': future_mean.values
-                        })
-                        st.dataframe(forecast_df.set_index('Date'))
-                    
-                    ax2.set_title('Future Forecast')
-                    ax2.set_xlabel('Date')
-                    ax2.set_ylabel('Net Quantity')
-                    ax2.legend()
-                    
-                    st.pyplot(fig2)
-                    
-            except Exception as e:
-                st.error(f"Error in forecasting: {str(e)}")
-                st.info("Try using 'All Data' option or a drug with more historical data")
+# Step 1: Collect top 5 subcategories with the highest sum of quantity
+top_5_subcats = df_bi_weekly.groupby('subcat')['quantity'].sum().nlargest(5).index
 
-# Sidebar
-with st.sidebar:
-    st.title("Navigation")
-    st.info("Use the tabs above to navigate between different features of the application")
+# Step 2: Filter the dataframe for only the top 5 subcategories
+filtered_top_5_per_subcat = df_bi_weekly[df_bi_weekly['subcat'].isin(top_5_subcats)]
+
+# filtered_df_bi_weekly = df_bi_weekly.merge(filtered_top_5_per_subcat[['subcat']], on=['subcat'])
+filtered_df_bi_weekly = filtered_top_5_per_subcat.sort_values(by=['subcat', 'month_number', 'bi_weekly'])
+# Add a biweekly index for every drugname in every subcat
+filtered_df_bi_weekly['biweekly_index'] = (
+    filtered_df_bi_weekly.groupby(['subcat'])
+    .cumcount() + 1
+)
+
+# Filter rows where month_number is 4, 5, or 6 (2 and 3 is added just for their history)
+filtered_months_df = filtered_df_bi_weekly[filtered_df_bi_weekly['month_number'].isin([2, 3, 4, 5, 6])]
+
+# The rest of the DataFrame
+rest_df = filtered_df_bi_weekly[~filtered_df_bi_weekly['month_number'].isin([4, 5, 6])]
+
+def calculate_last_three_cycles(df, subcat, horizon = 'biweekly_index', quanity= 'quantity'):
+    ml_df = df[(df['subcat'] == subcat)][[horizon,'subcat', quanity]]
+
+    ml_df['quantity_lastcycle']=ml_df[quanity].shift(+1)
+    ml_df['quantity_2cycleback']=ml_df[quanity].shift(+2)
+    ml_df['quantity_3cycleback']=ml_df[quanity].shift(+3)
+    ml_df['quantity_4cycleback']=ml_df[quanity].shift(+4)
+    ml_df['quantity_5cycleback']=ml_df[quanity].shift(+5)
+
+    ml_df = ml_df.dropna() #dropping na is necessary to avoid model failure other option
+
+    X = ml_df[['subcat', horizon,'quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback', 'quantity_4cycleback', 'quantity_5cycleback']]
+    y = ml_df[['subcat', quanity]]
+    return X, y
+
+trainX = pd.DataFrame(columns=['subcat', 'quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback', 
+                               'quantity_4cycleback','quantity_5cycleback'])
+trainY = pd.DataFrame(columns=['subcat', 'quantity'])
+
+trainX_rtn = pd.DataFrame(columns=['subcat', 'quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback', 
+                               'quantity_4cycleback','quantity_5cycleback'])
+trainY_rtn = pd.DataFrame(columns=['subcat', 'returnquantity'])
+
+list_subcat = filtered_top_5_per_subcat['subcat'].unique().tolist()
+
+subcat_dict = {
+    list_subcat[0]: {'Capacity': 200, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
+    list_subcat[1]: {'Capacity': 400, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
+    list_subcat[2]: {'Capacity': 100, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
+    list_subcat[3]: {'Capacity': 100, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
+    list_subcat[4]: {'Capacity': 300, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)}
+}
+
+# st.write(subcat_dict)
+
+for key in list_subcat:
+    X, y = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'quantity')
+    X_rtn, y_rtn = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'returnquantity')
+    trainX = pd.concat([X, trainX])
+    trainY = pd.concat([y, trainY])
+    trainX_rtn = pd.concat([X_rtn, trainX_rtn])
+    trainY_rtn = pd.concat([y_rtn, trainY_rtn])
+
+# st.write(trainX)
+# st.write(trainY_rtn)
+
+testX = pd.DataFrame(columns=['subcat', 'quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback',
+                              'quantity_4cycleback','quantity_5cycleback'])
+testY = pd.DataFrame(columns=['subcat', 'quantity'])
+
+testX_rtn = pd.DataFrame(columns=['subcat', 'quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback', 
+                               'quantity_4cycleback','quantity_5cycleback'])
+testY_rtn = pd.DataFrame(columns=['subcat', 'returnquantity'])
+
+for key in list_subcat:
+    X, y = calculate_last_three_cycles(filtered_months_df, subcat = key, quanity = 'quantity')
+    X_rtn, y_rtn = calculate_last_three_cycles(filtered_months_df, subcat = key, quanity = 'returnquantity')
+    testX = pd.concat([X, testX])
+    testY = pd.concat([y, testY])
+    testX_rtn = pd.concat([X_rtn, testX_rtn])
+    testY_rtn = pd.concat([y_rtn, testY_rtn])
+
+# st.write(testX)
+# st.write(testX_rtn)
+
+selected_subcat = st.selectbox('Select a category', list_subcat)
+
+filtered_df = trainX[trainX['subcat'] == selected_subcat]
+# selected_drugname = st.selectbox('Select a drug', filtered_df['drugname'].unique())
+
+# Cost Coefficients
+holding_cost = st.slider("Holding Cost", 0.1, 4.0, 2.0)  # Cost per unit held
+stockout_penalty = st.slider("Stockout Penalty", 10, 100, 50)  # Cost per stockout
+waste_penalty = st.slider("Waste Penalty", 1, 40, 10) # Cost for expired stock
+
+optimize = st.button("Optimize")
+
+if optimize:
+    model = RandomForestRegressor(random_state=seed)
+    model_rtn = RandomForestRegressor(random_state=seed)
+
+    # This is for demand
+    tempx = trainX[(trainX['subcat'] == selected_subcat)].copy()
+    t_x = tempx[['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback','quantity_4cycleback','quantity_5cycleback']]
+    t_y = trainY[(trainY['subcat']==selected_subcat)]['quantity']
+    model.fit(t_x, t_y)
+    test = testX[(testX['subcat'] == selected_subcat)][['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback',
+                                                                                                'quantity_4cycleback','quantity_5cycleback']]
+    predicted_demand = model.predict(test)
+    predicted_demand = np.ceil(predicted_demand).astype(int) 
+
+    # This is for return qty
+    tempx_rtn = trainX_rtn[(trainX_rtn['subcat'] == selected_subcat)].copy()
+    t_x = tempx_rtn[['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback','quantity_4cycleback','quantity_5cycleback']]
+    t_y = trainY_rtn[(trainY_rtn['subcat']==selected_subcat)]['returnquantity']
+
+    # st.write(t_y)
+
+    model_rtn.fit(t_x, t_y)
     
-    st.subheader("Model Information")
-    st.write("This application uses a SARIMA(1,1,1)x(1,1,1,12) model for forecasting.")
-    st.write("For small datasets, a simpler ARIMA(1,1,1) model is used.")
+    test = testX_rtn[(testX_rtn['subcat'] == selected_subcat)][['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback',
+                                                                                                'quantity_4cycleback','quantity_5cycleback']]
+    predicted_return = model_rtn.predict(test)
+    predicted_return = np.ceil(predicted_return).astype(int) 
     
-    # Add sidebar footer
-    st.sidebar.markdown("---")
-    st.sidebar.info("© 2025 Mainkar Chipa")
-    st.sidebar.info("© 2025 Mainkar Chipa")
+    test_index = testX[(testX['subcat'] == selected_subcat)]['biweekly_index']
+    
+    T = len(predicted_demand)-1
+
+    # Create a DataFrame with biweekly_index and predicted_demand
+    prediction_df = pd.DataFrame({
+        'biweekly_index': test_index,
+        'Predicted_Demand': predicted_demand,
+        'Return_Prediction': predicted_return,
+        "Unit_Cost": np.random.uniform(5, 50, len(predicted_demand)),  
+        "Salvage_Value": np.random.uniform(1, 10, len(predicted_demand)),
+        "Shelf_Life": np.random.randint(5, 15, len(predicted_demand))  
+    })
+
+    prediction_df = prediction_df.reset_index(drop=True)
+
+    # Visualize the DataFrame as a line chart
+    # st.line_chart(prediction_df.set_index('biweekly_index'))
+
+    # Gurobi Model
+    model = Model("Multi_Period_Medical_Inventory_Optimization")
+
+    # Decision Variables
+    Q = model.addVars(prediction_df.index, vtype=GRB.CONTINUOUS, name="OrderQty")  # Order quantity
+
+    # State Variables
+    I = model.addVars(prediction_df.index, vtype=GRB.CONTINUOUS, name="Inventory")  # Inventory level
+
+    # Auxiliary Variables (Derived)
+    Y = model.addVars(prediction_df.index, vtype=GRB.CONTINUOUS, name="Expired")   # Expired stock
+    S = model.addVars(prediction_df.index, vtype=GRB.CONTINUOUS, name="Stockout")  # Stockout
+
+    # Objective: Minimize Total Cost
+    model.setObjective(
+        sum(prediction_df.loc[i, "Unit_Cost"] * Q[i] + 
+            holding_cost * (I[i]) +
+            stockout_penalty * S[i] + 
+            waste_penalty * Y[i] - 
+            prediction_df.loc[i, "Salvage_Value"] * prediction_df.loc[i, "Return_Prediction"]
+            for i in prediction_df.index),
+        GRB.MINIMIZE
+    )
+
+    # Constraints:
+    for i in prediction_df.index:
+        # Inventory Balance Constraint
+        if i >= T:  # Ensure we don't reference out-of-bounds indices
+            continue
+        model.addConstr(I[i+1] == I[i] + Q[i] + prediction_df.loc[i, "Return_Prediction"] - prediction_df.loc[i, "Predicted_Demand"] - Y[i], name=f"Inventory_Balance_{i}")
+
+        model.addConstr(I[i+1] <= subcat_dict[selected_subcat]['Capacity'], name=f"Space_constraint{i}")
+        
+        # Expired Inventory Constraint
+        model.addConstr(Y[i] <= I[i], name=f"Expiry_{i}")
+
+        # Stockout Constraint
+        model.addConstr(S[i] >= prediction_df.loc[i, "Predicted_Demand"] - I[i] - Q[i], name=f"Stockout_{i}")
+    
+    # Solve Model
+    model.optimize()
+
+    prediction_df["Optimal_Order"] = [Q[i].x for i in prediction_df.index]
+    prediction_df["Inventory_Level"] = [I[i].x for i in prediction_df.index]
+    prediction_df["Expired_Stock"] = [Y[i].x for i in prediction_df.index]
+    prediction_df["Stockouts"] = [S[i].x for i in prediction_df.index]
+
+    # Display the DataFrame
+    st.dataframe(prediction_df)
