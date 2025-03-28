@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+import plotly.express as px
 from gurobipy import Model, GRB
 from sklearn.ensemble import RandomForestRegressor
 
@@ -60,10 +60,10 @@ filtered_df_bi_weekly['biweekly_index'] = (
 # Filter rows where month_number is 4, 5, or 6 (2 and 3 is added just for their history)
 filtered_months_df = filtered_df_bi_weekly[filtered_df_bi_weekly['month_number'].isin([2, 3, 4, 5, 6])]
 
-# The rest of the DataFrame
-rest_df = filtered_df_bi_weekly[~filtered_df_bi_weekly['month_number'].isin([4, 5, 6])]
+# The rest of the DataFrame but will remove these months later
+rest_df = filtered_df_bi_weekly
 
-def calculate_last_three_cycles(df, subcat, horizon = 'biweekly_index', quanity= 'quantity'):
+def calculate_last_three_cycles(df, subcat, horizon = 'biweekly_index', quanity= 'quantity', train=False):
     ml_df = df[(df['subcat'] == subcat)][[horizon,'subcat', quanity]]
 
     ml_df['quantity_lastcycle']=ml_df[quanity].shift(+1)
@@ -71,6 +71,9 @@ def calculate_last_three_cycles(df, subcat, horizon = 'biweekly_index', quanity=
     ml_df['quantity_3cycleback']=ml_df[quanity].shift(+3)
     ml_df['quantity_4cycleback']=ml_df[quanity].shift(+4)
     ml_df['quantity_5cycleback']=ml_df[quanity].shift(+5)
+
+    if train:
+        ml_df = ml_df[~ml_df[horizon].isin([9, 10, 11, 12, 13, 14, 15, 16, 17])]
 
     ml_df = ml_df.dropna() #dropping na is necessary to avoid model failure other option
 
@@ -99,8 +102,8 @@ subcat_dict = {
 # st.write(subcat_dict)
 
 for key in list_subcat:
-    X, y = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'quantity')
-    X_rtn, y_rtn = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'returnquantity')
+    X, y = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'quantity', train=True)
+    X_rtn, y_rtn = calculate_last_three_cycles(rest_df, subcat = key, quanity = 'returnquantity', train=True)
     trainX = pd.concat([X, trainX])
     trainY = pd.concat([y, trainY])
     trainX_rtn = pd.concat([X_rtn, trainX_rtn])
@@ -159,8 +162,6 @@ if optimize:
     t_x = tempx_rtn[['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback','quantity_4cycleback','quantity_5cycleback']]
     t_y = trainY_rtn[(trainY_rtn['subcat']==selected_subcat)]['returnquantity']
 
-    # st.write(t_y)
-
     model_rtn.fit(t_x, t_y)
     
     test = testX_rtn[(testX_rtn['subcat'] == selected_subcat)][['quantity_lastcycle', 'quantity_2cycleback', 'quantity_3cycleback',
@@ -172,20 +173,19 @@ if optimize:
     
     T = len(predicted_demand)-1
 
+    temp_dict = subcat_dict[selected_subcat]
+
     # Create a DataFrame with biweekly_index and predicted_demand
     prediction_df = pd.DataFrame({
         'biweekly_index': test_index,
         'Predicted_Demand': predicted_demand,
         'Return_Prediction': predicted_return,
-        "Unit_Cost": np.random.uniform(5, 50, len(predicted_demand)),  
-        "Salvage_Value": np.random.uniform(1, 10, len(predicted_demand)),
-        "Shelf_Life": np.random.randint(5, 15, len(predicted_demand))  
+        "Unit_Cost": np.random.uniform(temp_dict['unit_cost'][0], temp_dict['unit_cost'][1], len(predicted_demand)),  
+        "Salvage_Value": np.random.uniform(temp_dict['salvage_value'][0], temp_dict['salvage_value'][1], len(predicted_demand)),
+        "Shelf_Life": np.random.randint(temp_dict['shelf_life'][0], temp_dict['shelf_life'][1], len(predicted_demand))  
     })
 
     prediction_df = prediction_df.reset_index(drop=True)
-
-    # Visualize the DataFrame as a line chart
-    # st.line_chart(prediction_df.set_index('biweekly_index'))
 
     # Gurobi Model
     model = Model("Multi_Period_Medical_Inventory_Optimization")
@@ -234,5 +234,38 @@ if optimize:
     prediction_df["Expired_Stock"] = [Y[i].x for i in prediction_df.index]
     prediction_df["Stockouts"] = [S[i].x for i in prediction_df.index]
 
-    # Display the DataFrame
-    st.dataframe(prediction_df)
+    tab1, tab2, tab3, tab4 = st.tabs(["Predictions", "Inventory Level", "Full DataFrame", "Placeholder"])
+
+    # Tab 1: Show predictions (Predicted_Demand and Return_Prediction)
+    with tab1:
+        st.write("### Predictions")
+        fig1 = px.line(
+        prediction_df,
+        x=prediction_df.index,
+        y=['Predicted_Demand', 'Return_Prediction'],
+        labels={'value': 'Quantity', 'index': 'Cycles'},
+        title="Predicted Demand and Return Prediction"
+        )
+        st.plotly_chart(fig1)
+
+    # Tab 2: Show Inventory_Level over time
+    with tab2:
+        st.write("### Inventory Level Over Time")
+        fig2 = px.line(
+            prediction_df,
+            x=prediction_df.index,
+            y='Inventory_Level',
+            labels={'Inventory_Level': 'Inventory Level', 'index': 'Cycles'},
+            title="Inventory Level Over Time"
+        )
+        st.plotly_chart(fig2)
+
+    # Tab 3: Show the entire DataFrame
+    with tab3:
+        st.write("### Full DataFrame")
+        st.dataframe(prediction_df)
+
+    # Tab 4: Placeholder tab
+    with tab4:
+        st.write("### Placeholder")
+        st.write("This tab is currently empty. Content will be added later.")
