@@ -92,11 +92,11 @@ trainY_rtn = pd.DataFrame(columns=['subcat', 'returnquantity'])
 list_subcat = filtered_top_5_per_subcat['subcat'].unique().tolist()
 
 subcat_dict = {
-    list_subcat[0]: {'Capacity': 200, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
-    list_subcat[1]: {'Capacity': 400, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
-    list_subcat[2]: {'Capacity': 100, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
-    list_subcat[3]: {'Capacity': 100, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)},
-    list_subcat[4]: {'Capacity': 300, 'shelf_life': (5,15), 'unit_cost': (5,50), 'salvage_value': (1,10)}
+    list_subcat[0]: {'Capacity': 200, 'shelf_life': (3,8), 'unit_cost': (40.85,322.27), 'salvage_value': (1,617.76)},
+    list_subcat[1]: {'Capacity': 400, 'shelf_life': (2,5), 'unit_cost': (40.00,3178.00), 'salvage_value': (1,8014.0)},
+    list_subcat[2]: {'Capacity': 100, 'shelf_life': (1,4), 'unit_cost': (40.00,3719.00), 'salvage_value': (1,4462.8)},
+    list_subcat[3]: {'Capacity': 100, 'shelf_life': (1,3), 'unit_cost': (42.95,594.95), 'salvage_value': (1,327.11)},
+    list_subcat[4]: {'Capacity': 300, 'shelf_life': (5,10), 'unit_cost': (40.00,3491.09), 'salvage_value': (1,1226.0)}
 }
 
 # st.write(subcat_dict)
@@ -213,9 +213,16 @@ if optimize:
 
     # Constraints:
     for i in prediction_df.index:
+        # Safety Stock Constraint
+        safety_stock = 0.2 * prediction_df["Predicted_Demand"]  # Example: 20% of demand as buffer
+        
         # Inventory Balance Constraint
         if i >= T:  # Ensure we don't reference out-of-bounds indices
             continue
+        
+        # Ensure inventory level meets safety stock requirements
+        model.addConstr(I[i] >= safety_stock[i], name=f"SafetyStock_{i}")
+        
         model.addConstr(I[i+1] == I[i] + Q[i] + prediction_df.loc[i, "Return_Prediction"] - prediction_df.loc[i, "Predicted_Demand"] - Y[i], name=f"Inventory_Balance_{i}")
 
         model.addConstr(I[i+1] <= subcat_dict[selected_subcat]['Capacity'], name=f"Space_constraint{i}")
