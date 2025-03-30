@@ -12,7 +12,7 @@ np.random.seed(seed)
 
 st.set_page_config(
     page_title="Medical Inventory Forecasting",
-    page_icon="📊",
+    page_icon="📈",
     layout="wide"
 )
 
@@ -234,7 +234,9 @@ if optimize:
     prediction_df["Expired_Stock"] = [Y[i].x for i in prediction_df.index]
     prediction_df["Stockouts"] = [S[i].x for i in prediction_df.index]
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Predictions", "Inventory Level", "Full DataFrame", "Placeholder"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Predictions", "Order Quantities", "Inventory Level", "Simulation"])
+
+    st.write("Each cycle represents a bi-weekly period.")
 
     # Tab 1: Show predictions (Predicted_Demand and Return_Prediction)
     with tab1:
@@ -248,8 +250,23 @@ if optimize:
         )
         st.plotly_chart(fig1)
 
-    # Tab 2: Show Inventory_Level over time
+
+    # Tab 2: Order Quantity tab
     with tab2:
+        st.write("### Order Quantity over time") 
+        fig3 = px.bar(
+            prediction_df,
+            x=prediction_df.index,
+            y='Optimal_Order',
+            labels={'Optimal_Order': 'Order Quantity', 'index': 'Cycles'},
+            title="Inventory Level Over Time"
+        )
+        st.plotly_chart(fig3)
+    
+    
+    
+    # Tab 3: Show Inventory_Level over time
+    with tab3:
         st.write("### Inventory Level Over Time")
         fig2 = px.line(
             prediction_df,
@@ -260,12 +277,7 @@ if optimize:
         )
         st.plotly_chart(fig2)
 
-    # Tab 3: Show the entire DataFrame
-    with tab3:
-        st.write("### Full DataFrame")
-        st.dataframe(prediction_df)
-
-    # Tab 4: Placeholder tab
+    # Tab 4: Show the entire DataFrame
     with tab4:
-        st.write("### Placeholder")
-        st.write("This tab is currently empty. Content will be added later.")
+        st.write("### Prediction Simulation")
+        st.dataframe(prediction_df)
