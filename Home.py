@@ -185,6 +185,21 @@ if optimize:
         "Shelf_Life": np.random.randint(temp_dict['shelf_life'][0], temp_dict['shelf_life'][1], len(predicted_demand))  
     })
 
+    # Create a temporary table with biweekly_index, month_name, and bi_weekly
+    temp_table = filtered_df_bi_weekly[['biweekly_index', 'month_name', 'bi_weekly']].drop_duplicates()
+
+    # Join prediction_df with the temp_table on biweekly_index
+    prediction_df = prediction_df.merge(temp_table, on='biweekly_index', how='left')
+    # Reorder columns to place month_name and bi_weekly at the beginning
+    columns_order = ['month_name', 'bi_weekly'] + [col for col in prediction_df.columns if col not in ['month_name', 'bi_weekly']]
+    prediction_df = prediction_df[columns_order]
+
+    # Rename 'bi_weekly' to 'cycle_number'
+    prediction_df.rename(columns={'bi_weekly': 'cycle_number'}, inplace=True)
+
+    # Drop the 'biweekly_index' column
+    prediction_df.drop(columns=['biweekly_index'], inplace=True)
+
     prediction_df = prediction_df.reset_index(drop=True)
 
     # Gurobi Model
