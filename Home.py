@@ -283,6 +283,12 @@ if optimize:
             labels={'Optimal_Order': 'Order Quantity', 'index': 'Cycles'},
             title="Inventory Level Over Time"
         )
+        # Update layout to show all x-axis labels
+        fig3.update_layout(
+            xaxis=dict(
+                tickmode='linear'  # Ensures all x-axis labels are shown
+            )
+        )
         st.plotly_chart(fig3)
     
     
