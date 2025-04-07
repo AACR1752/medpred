@@ -235,6 +235,9 @@ if optimize:
         if i >= T:  # Ensure we don't reference out-of-bounds indices
             continue
         
+        # Starting Inventory at capacity
+        model.addConstr(I[0] == subcat_dict[selected_subcat]['Capacity'], name=f"Initial_Inventory{i}")
+        
         # Ensure inventory level meets safety stock requirements
         model.addConstr(I[i] >= safety_stock[i], name=f"SafetyStock_{i}")
         
